@@ -1,36 +1,54 @@
-import { EventBus } from '../EventBus';
 import { Scene } from 'phaser';
+import { EventBus } from '../EventBus';
 
 export class GameOver extends Scene
 {
-    camera: Phaser.Cameras.Scene2D.Camera;
-    background: Phaser.GameObjects.Image;
-    gameOverText : Phaser.GameObjects.Text;
+    private score: number = 0;
 
     constructor ()
     {
         super('GameOver');
     }
 
-    create ()
+    init (data: { score?: number })
     {
-        this.camera = this.cameras.main
-        this.camera.setBackgroundColor(0xff0000);
-
-        this.background = this.add.image(512, 384, 'background');
-        this.background.setAlpha(0.5);
-
-        this.gameOverText = this.add.text(512, 384, 'Game Over', {
-            fontFamily: 'Arial Black', fontSize: 64, color: '#ffffff',
-            stroke: '#000000', strokeThickness: 8,
-            align: 'center'
-        }).setOrigin(0.5).setDepth(100);
-        
-        EventBus.emit('current-scene-ready', this);
+        this.score = data.score ?? 0;
     }
 
-    changeScene ()
+    create ()
     {
-        this.scene.start('MainMenu');
+        this.cameras.main.setBackgroundColor('#0d0d1a');
+
+        const cx = 270;
+        const cy = 480;
+
+        this.add.text(cx, cy - 120, 'GAME OVER', {
+            fontFamily: 'Arial Black',
+            fontSize: 52,
+            color: '#ff4444',
+            stroke: '#000000',
+            strokeThickness: 8,
+            align: 'center',
+        }).setOrigin(0.5);
+
+        this.add.text(cx, cy, `Score: ${this.score}`, {
+            fontFamily: 'Arial',
+            fontSize: 36,
+            color: '#ffffff',
+            align: 'center',
+        }).setOrigin(0.5);
+
+        this.add.text(cx, cy + 100, 'tap to play again', {
+            fontFamily: 'Arial',
+            fontSize: 22,
+            color: '#aaaaaa',
+            align: 'center',
+        }).setOrigin(0.5);
+
+        this.input.once('pointerdown', () => {
+            this.scene.start('MainMenu');
+        });
+
+        EventBus.emit('current-scene-ready', this);
     }
 }
