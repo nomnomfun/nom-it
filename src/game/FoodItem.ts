@@ -1,13 +1,22 @@
 import Phaser from 'phaser';
+import { bakeOutlineTexture } from './OutlineTextureBuilder';
 
 interface Segment {
     localX: number;
     width: number;
-    image: Phaser.GameObjects.RenderTexture;
+    image: Phaser.GameObjects.Image | Phaser.GameObjects.RenderTexture;
+    rawTexKey: string; // unbordered slice texture — used by rebake() to avoid border-on-border
+    leftBorder: boolean;  // false when this edge was created by a bite cut
+    rightBorder: boolean;
 }
 
 export class FoodItem {
     private scene: Phaser.Scene;
+    // rawKey: unbordered content texture — used for segment drawing in applyBite.
+    // After the first rebake it converges with textureKey (both point to the rebaked RT).
+    private rawKey: string;
+    // textureKey: the texture currently used for display.
+    // Initially the bordered version; after the first rebake the plain rebaked RT.
     private textureKey: string;
     private displayObject: Phaser.GameObjects.Image | Phaser.GameObjects.RenderTexture;
     private segments: Segment[] = [];
@@ -18,7 +27,12 @@ export class FoodItem {
     public height: number;
     public rotation: number;
 
+    private leftBorder = true;
+    private rightBorder = true;
+    private _consumed = false; // true when applyBite leaves no surviving segments
+
     private static textureCounter = 0;
+    private static readonly STICKER_BORDER = 12;
 
     constructor (
         scene: Phaser.Scene,
@@ -36,20 +50,25 @@ export class FoodItem {
         this.height = height;
         this.rotation = rotation;
 
-        // Generate a unique texture key
-        this.textureKey = `food_${FoodItem.textureCounter++}`;
-
-        // Generate solid-color texture
+        // Generate the raw (unbordered) content texture
+        this.rawKey = `food_raw_${FoodItem.textureCounter}`;
         const g = scene.add.graphics();
         g.fillStyle(color, 1);
         g.fillRect(0, 0, width, height);
-        // Add a slightly lighter border for visual pop
-        g.lineStyle(3, 0xffffff, 0.4);
-        g.strokeRect(1, 1, width - 2, height - 2);
-        g.generateTexture(this.textureKey, width, height);
+        g.generateTexture(this.rawKey, width, height);
         g.destroy();
 
-        // Create display object
+        // Bake the white sticker border via the WebGL outline shader.
+        // Output is (width + 2*BORDER) × (height + 2*BORDER).
+        this.textureKey = `food_${FoodItem.textureCounter++}`;
+        try {
+            bakeOutlineTexture(scene, this.rawKey, FoodItem.STICKER_BORDER, this.textureKey);
+        } catch (e) {
+            console.error('OutlineTextureBuilder failed — falling back to raw texture:', e);
+            this.textureKey = this.rawKey;
+        }
+
+        // Create display object using the bordered texture
         this.displayObject = scene.add.image(x, y, this.textureKey)
             .setOrigin(0.5, 0.5)
             .setRotation(rotation);
@@ -88,21 +107,22 @@ export class FoodItem {
         const localBiteRight = localBiteLeft + biteWidth;
 
         // Build current segment list (starts as single full-width segment if no segments yet)
-        let currentSegments: Array<{ localX: number; width: number }>;
+        type SegSpec = { localX: number; width: number; leftBorder: boolean; rightBorder: boolean };
+        let currentSegments: SegSpec[];
         if (this.segments.length === 0) {
-            currentSegments = [{ localX: 0, width: this.width }];
+            currentSegments = [{ localX: 0, width: this.width, leftBorder: this.leftBorder, rightBorder: this.rightBorder }];
         } else {
-            currentSegments = this.segments.map(s => ({ localX: s.localX, width: s.width }));
+            currentSegments = this.segments.map(s => ({ localX: s.localX, width: s.width, leftBorder: s.leftBorder, rightBorder: s.rightBorder }));
         }
 
         const totalBefore = currentSegments.reduce((sum, s) => sum + s.width, 0);
-        const newSegments: Array<{ localX: number; width: number }> = [];
+        const newSegments: SegSpec[] = [];
 
         for (const seg of currentSegments) {
             const segLeft = seg.localX;
             const segRight = seg.localX + seg.width;
 
-            // No overlap
+            // No overlap — inherit edges unchanged
             if (localBiteRight <= segLeft || localBiteLeft >= segRight) {
                 newSegments.push({ ...seg });
                 continue;
@@ -113,21 +133,21 @@ export class FoodItem {
                 continue;
             }
 
-            // Bite overlaps left edge only
+            // Bite overlaps left edge only — right piece, left side is now a cut
             if (localBiteLeft <= segLeft && localBiteRight < segRight) {
-                newSegments.push({ localX: localBiteRight, width: segRight - localBiteRight });
+                newSegments.push({ localX: localBiteRight, width: segRight - localBiteRight, leftBorder: false, rightBorder: seg.rightBorder });
                 continue;
             }
 
-            // Bite overlaps right edge only
+            // Bite overlaps right edge only — left piece, right side is now a cut
             if (localBiteLeft > segLeft && localBiteRight >= segRight) {
-                newSegments.push({ localX: segLeft, width: localBiteLeft - segLeft });
+                newSegments.push({ localX: segLeft, width: localBiteLeft - segLeft, leftBorder: seg.leftBorder, rightBorder: false });
                 continue;
             }
 
-            // Bite is interior — split into two
-            newSegments.push({ localX: segLeft, width: localBiteLeft - segLeft });
-            newSegments.push({ localX: localBiteRight, width: segRight - localBiteRight });
+            // Bite is interior — left piece keeps original left; right piece keeps original right; both inner edges are cuts
+            newSegments.push({ localX: segLeft, width: localBiteLeft - segLeft, leftBorder: seg.leftBorder, rightBorder: false });
+            newSegments.push({ localX: localBiteRight, width: segRight - localBiteRight, leftBorder: false, rightBorder: seg.rightBorder });
         }
 
         // Filter out sub-pixel segments — a zero-dimension RT causes a WebGL framebuffer error.
@@ -136,12 +156,19 @@ export class FoodItem {
         const totalAfter = validSegments.reduce((sum, s) => sum + s.width, 0);
         const consumed = totalBefore - totalAfter;
 
+        if (validSegments.length === 0) {
+            this._consumed = true;
+        }
+
         // Hide the current display object
         this.displayObject.setVisible(false);
 
-        // Destroy existing segment images
+        // Destroy existing segment images and their raw textures
         for (const seg of this.segments) {
             seg.image.destroy();
+            if (this.scene.textures.exists(seg.rawTexKey)) {
+                this.scene.textures.remove(seg.rawTexKey);
+            }
         }
         this.segments = [];
 
@@ -154,11 +181,33 @@ export class FoodItem {
                 .setOrigin(0.5, 0.5)
                 .setRotation(this.rotation);
 
-            const tmp = this.scene.add.image(0, 0, this.textureKey).setOrigin(0, 0);
+            // Draw from the raw (unbordered) content texture so segment dimensions
+            // and offsets remain consistent with the bite math coordinate system.
+            const tmp = this.scene.add.image(0, 0, this.rawKey).setOrigin(0, 0);
             segRT.draw(tmp, -seg.localX, 0);
             tmp.destroy();
 
-            this.segments.push({ localX: seg.localX, width: seg.width, image: segRT });
+            // Save the plain segment content as a texture for use in rebake().
+            const segRawKey = `seg_raw_${FoodItem.textureCounter++}`;
+            segRT.saveTexture(segRawKey);
+
+            // Bake the sticker border onto the segment, suppressing cut edges.
+            const segBorderedKey = `seg_${FoodItem.textureCounter++}`;
+            let segImage: Phaser.GameObjects.Image | Phaser.GameObjects.RenderTexture;
+            try {
+                bakeOutlineTexture(this.scene, segRawKey, FoodItem.STICKER_BORDER, segBorderedKey, {
+                    left: seg.leftBorder,
+                    right: seg.rightBorder,
+                });
+                segRT.destroy();
+                segImage = this.scene.add.image(segCenterX, this.y, segBorderedKey)
+                    .setOrigin(0.5, 0.5)
+                    .setRotation(this.rotation);
+            } catch (e) {
+                segImage = segRT; // fall back to plain RT
+            }
+
+            this.segments.push({ localX: seg.localX, width: seg.width, image: segImage, rawTexKey: segRawKey, leftBorder: seg.leftBorder, rightBorder: seg.rightBorder });
         }
 
         return { consumed, total: totalBefore };
@@ -202,21 +251,30 @@ export class FoodItem {
     }
 
     private rebake (totalWidth: number, onComplete: () => void): void {
+        // Derive edge state from the outermost surviving segments.
+        const mergedLeftBorder = this.segments[0]?.leftBorder ?? true;
+        const mergedRightBorder = this.segments[this.segments.length - 1]?.rightBorder ?? true;
+
         const rt = this.scene.add.renderTexture(this.x, this.y, Math.max(1, totalWidth), this.height)
             .setOrigin(0.5, 0.5)
             .setRotation(this.rotation);
 
-        // Each segment is already a correctly-sized RT. Draw them packed left-to-right.
+        // Draw each segment's unbordered slice (rawTexKey) into the merged RT.
+        // Using rawTexKey avoids baking the border into the content, which would
+        // produce a border-on-border artifact when the merged piece is re-outlined.
         let cursor = 0;
         for (const seg of this.segments) {
-            // rt.draw(obj, x, y) places the object's top-left at (x, y) in RT local space.
-            // seg.image has origin (0.5, 0.5), so pass the center coords within the RT.
-            rt.draw(seg.image, cursor + seg.width / 2, this.height / 2);
+            const rawImg = this.scene.add.image(0, 0, seg.rawTexKey).setOrigin(0, 0);
+            rt.draw(rawImg, cursor, 0);
+            rawImg.destroy();
             cursor += seg.width;
         }
 
         for (const seg of this.segments) {
             seg.image.destroy();
+            if (this.scene.textures.exists(seg.rawTexKey)) {
+                this.scene.textures.remove(seg.rawTexKey);
+            }
         }
         this.segments = [];
 
@@ -224,19 +282,43 @@ export class FoodItem {
         if (this.scene.textures.exists(this.textureKey)) {
             this.scene.textures.remove(this.textureKey);
         }
+        // Also remove the raw content texture if it is a separate key (first rebake only).
+        if (this.rawKey !== this.textureKey && this.scene.textures.exists(this.rawKey)) {
+            this.scene.textures.remove(this.rawKey);
+        }
 
-        // Save RT content as a named texture so subsequent bites can draw from it.
-        // saveTexture sets _saved=true, preventing the texture from being destroyed with the RT.
-        this.textureKey = `food_${FoodItem.textureCounter++}`;
-        rt.saveTexture(this.textureKey);
-
-        this.displayObject = rt;
+        // Save the packed RT content as the new raw (unbordered) texture.
+        // rawKey is used for bite-segment drawing; its coordinates must stay unbordered.
+        const newKey = `food_${FoodItem.textureCounter++}`;
+        rt.saveTexture(newKey);
+        this.rawKey = newKey;
         this.width = totalWidth;
+        this.leftBorder = mergedLeftBorder;
+        this.rightBorder = mergedRightBorder;
+
+        // Re-apply the sticker border, preserving which sides are original vs cut.
+        const borderedKey = `food_${FoodItem.textureCounter++}`;
+        try {
+            bakeOutlineTexture(this.scene, newKey, FoodItem.STICKER_BORDER, borderedKey, {
+                left: mergedLeftBorder,
+                right: mergedRightBorder,
+            });
+            rt.destroy();
+            this.displayObject = this.scene.add.image(this.x, this.y, borderedKey)
+                .setOrigin(0.5, 0.5)
+                .setRotation(this.rotation);
+            this.textureKey = borderedKey;
+        } catch (e) {
+            console.error('bakeOutlineTexture failed in rebake — using plain RT:', e);
+            this.displayObject = rt;
+            this.textureKey = newKey;
+        }
 
         onComplete();
     }
 
     isEmpty (): boolean {
+        if (this._consumed) return true;
         if (this.segments.length > 0) {
             return this.segments.every(s => s.width < 1);
         }
@@ -251,6 +333,10 @@ export class FoodItem {
         this.displayObject.destroy();
         if (this.scene.textures.exists(this.textureKey)) {
             this.scene.textures.remove(this.textureKey);
+        }
+        // rawKey is a separate texture only before the first rebake
+        if (this.rawKey !== this.textureKey && this.scene.textures.exists(this.rawKey)) {
+            this.scene.textures.remove(this.rawKey);
         }
     }
 }
