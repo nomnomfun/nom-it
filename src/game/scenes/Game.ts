@@ -259,7 +259,7 @@ export class Game extends Scene
         const food = this.activeFood;
         if (!food) return;
 
-        const biteWidth = Math.min(dragDist / CANVAS_W * food.width, food.width);
+        const biteWidth = Math.min(dragDist, CANVAS_W);
         this.drawBiteZone(biteWidth);
     }
 
@@ -274,7 +274,7 @@ export class Game extends Scene
         }
 
         const dragDist = Math.abs(pointer.x - this.dragStartX);
-        const biteWidth = Math.min(dragDist / CANVAS_W * food.width, food.width);
+        const biteWidth = Math.min(dragDist, CANVAS_W);
         this.biteZone.clear();
 
         if (biteWidth < 2) return; // ignore accidental taps
