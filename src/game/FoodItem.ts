@@ -106,6 +106,18 @@ export class FoodItem {
         return this.y;
     }
 
+    /** Half-width of the current visual segment span; used by Game to track hand positions
+     *  during the merge tween. Falls back to aabbWidth/2 when no segments are active. */
+    get currentHalfSpan (): number {
+        if (this.segments.length === 0) return this.aabbWidth / 2;
+        let minX = Infinity, maxX = -Infinity;
+        for (const seg of this.segments) {
+            minX = Math.min(minX, seg.image.x - seg.width / 2);
+            maxX = Math.max(maxX, seg.image.x + seg.width / 2);
+        }
+        return (maxX - minX) / 2;
+    }
+
     setPosition (x: number, y: number): void {
         this.x = x;
         this.y = y;
@@ -262,8 +274,8 @@ export class FoodItem {
             tweens.add({
                 targets: seg.image,
                 x: targetX,
-                duration: 300,
-                ease: 'Quad.easeOut',
+                duration: 200,
+                ease: 'Quad.easeIn',
                 onComplete: () => {
                     completed++;
                     if (completed === targets.length) {

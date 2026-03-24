@@ -29,19 +29,24 @@ const HAMSTER_SCALE = 0.75;
 const HAND_SPEED = 500;          // px/s — how fast hands slide to/from food
 const HAND_SCALE = 0.7;          // 256×256 → ~179×179 rendered
 const HAND_ALPHA = 0.6;          // opacity — low enough to see food behind the hands
-const HAND_GAP = 25;             // extra px between hand center and food AABB edge
+const HAND_GAP = 28;             // extra px between hand center and food AABB edge
 const HAND_DEFAULT_SPREAD = 180; // half-distance between hands when no food is active
 
 // Floating idle animation — all layers share one sine wave; food/hands lag behind
-const FLOAT_AMPLITUDE = 3;    // px — shared vertical bob distance
-const FLOAT_PERIOD    = 4000;  // ms — full cycle (up + back down)
+const FLOAT_AMPLITUDE = 2;    // px — shared vertical bob distance
+const FLOAT_PERIOD    = 2000;  // ms — full cycle (up + back down)
 const FLOAT_LAG_MS    = 600;   // ms — how far food + hands trail behind the hamster
 
 // Bite animation frame durations (ms) — tune these to taste
 const BITE_ANIM_IDLE_MS        = 1;
-const BITE_ANIM_MOUTH_OPEN_MS  = 50; // held longer for anticipation
+const BITE_ANIM_MOUTH_OPEN_MS  = 50;  // held longer for anticipation
+const BITE_TWEEN_MOUTH_OPEN_MS  = 20;  // held longer for anticipation
 const BITE_ANIM_BITE_MS        = 230; // held longer for impact
+const BITE_TWEEN_BITE_MS        = 10; // held longer for impact
 const BITE_ANIM_INBETWEEN_MS   = 80;
+const BITE_TWEEN_INBETWEEN_MS   = 200;
+const BITE_Y_AMPLITUDE         = 10;  // px — how far hamster rises/dips during the bite
+const BITE_Y_AMPLITUDE_DOWN    = 50;  // px — how far hamster rises/dips during the bite
 
 // Conveyor HUD row
 const CONVEYOR_Y = 610;
@@ -122,17 +127,14 @@ export class Game extends Scene
             repeat: 0,
         });
 
-        // Return to idle frame after bite animation completes; float resumes automatically
+        // Return to idle frame after bite animation completes
         this.hamsterSprite.on(
             Phaser.Animations.Events.ANIMATION_COMPLETE,
-            () => {
-                this.hamsterSprite.setFrame(0);
-                this.hamsterBiting = false;
-            }
+            () => this.hamsterSprite.setFrame(0)
         );
 
         // HUD
-        this.hungerMeter = new HungerMeter(this, 20, 14, CANVAS_W - 40, 32);
+        //this.hungerMeter = new HungerMeter(this, 20, 14, CANVAS_W - 40, 32);
 
         this.scoreText = this.add.text(CANVAS_W - 20, 14, 'Score: 0', {
             fontFamily: 'Arial',
@@ -186,15 +188,32 @@ export class Game extends Scene
 
         // Hamster bobs on its own phase; paused during bite
         if (!this.hamsterBiting) {
-            this.hamsterSprite.setY(HAMSTER_CY - Math.sin(now * TAU_OVER_PERIOD) * FLOAT_AMPLITUDE);
+            // this.hamsterSprite.setY(HAMSTER_CY - Math.sin(now * TAU_OVER_PERIOD) * FLOAT_AMPLITUDE);
+            this.hamsterSprite.setY(HAMSTER_CY);
         }
 
         // Food + hands sample the same wave but lagged — guaranteed in sync, never drifts
         const foodFloatY = -Math.sin((now - FLOAT_LAG_MS) * TAU_OVER_PERIOD) * FLOAT_AMPLITUDE;
         this.handLeftTarget.y  = FOOD_CY + foodFloatY;
         this.handRightTarget.y = FOOD_CY + foodFloatY;
-        if (this.activeFood) {
+        // Skip repositioning during the merge tween — tweenMerge animates segment x
+        // positions directly, and setPosition would call repositionSegments() and
+        // overwrite those tweened values every frame.
+        if (this.activeFood && !this.inputBlocked) {
             this.activeFood.setPosition(FOOD_CX, FOOD_CY + foodFloatY);
+        }
+
+        // During merge tween, pin hands directly to the live segment span each frame.
+        // Setting both position and target keeps moveHandToward a no-op (dist < 1),
+        // so the hands inherit the segment tween's Quad.easeOut exactly.
+        if (this.activeFood && this.inputBlocked) {
+            const halfSpan = this.activeFood.currentHalfSpan;
+            const lx = FOOD_CX - halfSpan - HAND_GAP;
+            const rx = FOOD_CX + halfSpan + HAND_GAP;
+            this.handLeft.setX(lx);
+            this.handRight.setX(rx);
+            this.handLeftTarget.x  = lx;
+            this.handRightTarget.x = rx;
         }
 
         this.moveHandToward(this.handLeft,  this.handLeftTarget,  dt);
@@ -344,11 +363,39 @@ export class Game extends Scene
         this.hamsterSprite.setY(HAMSTER_CY);
         this.hamsterSprite.play('bite');
 
+        // Y movement synced to bite frames:
+        //   frame 2 (open mouth) → rise up
+        //   frame 3 (bite)       → lunge down
+        //   frame 4 (inbetween)  → settle back to rest
+        this.tweens.chain({
+            tweens: [
+                {
+                    targets: this.hamsterSprite,
+                    y: HAMSTER_CY - BITE_Y_AMPLITUDE,
+                    duration: BITE_TWEEN_MOUTH_OPEN_MS,
+                    ease: 'Sine.easeOut',
+                },
+                {
+                    targets: this.hamsterSprite,
+                    y: HAMSTER_CY + BITE_Y_AMPLITUDE_DOWN,
+                    duration: BITE_TWEEN_BITE_MS,
+                    ease: 'Sine.easeOut',
+                },
+                {
+                    targets: this.hamsterSprite,
+                    y: HAMSTER_CY,
+                    duration: BITE_TWEEN_INBETWEEN_MS,
+                    ease: 'Sine.easeIn',
+                    onComplete: () => { this.hamsterBiting = false; },
+                },
+            ],
+        });
+
         const biteX = food.centerX - biteWidth / 2;
         const { consumed, total } = food.applyBite(biteX, biteWidth);
 
         const efficiency = Math.min(1, consumed / (biteWidth * food.height));
-        this.hungerMeter.refill(efficiency * REFILL_MAX);
+        //this.hungerMeter.refill(efficiency * REFILL_MAX);
 
         // Camera shake
         this.cameras.main.shake(80, 0.005);
