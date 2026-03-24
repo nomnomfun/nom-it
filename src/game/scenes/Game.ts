@@ -29,7 +29,7 @@ const HAMSTER_SCALE = 0.75;
 const HAND_SPEED = 500;          // px/s — how fast hands slide to/from food
 const HAND_SCALE = 0.7;          // 256×256 → ~179×179 rendered
 const HAND_ALPHA = 0.6;          // opacity — low enough to see food behind the hands
-const HAND_GAP = 28;             // extra px between hand center and food AABB edge
+const HAND_GAP = 20;             // extra px between hand center and food AABB edge
 const HAND_DEFAULT_SPREAD = 180; // half-distance between hands when no food is active
 
 // Floating idle animation — all layers share one sine wave; food/hands lag behind
@@ -55,7 +55,37 @@ const CONVEYOR_ITEM_HEIGHT = 60;
 // Palette of food colors for prototype
 const FOOD_COLORS = [0xFF6B35, 0x4CAF50, 0x9C27B0, 0xFF5252, 0x2196F3, 0xFFEB3B, 0xFF4081];
 
-function randomFoodConfig (): { width: number; height: number; color: number; rotation: number } {
+// Sprite-based object frames — add entries here as new frames are added to objects-sheet.png
+// `scale`   — 0–1 fraction of the frame's natural pixel dimensions (e.g. 0.5 = 50%)
+// `handGap` — optional px override for how far the hands sit from the food edge;
+//             omit to fall back to the global HAND_GAP constant
+const OBJECT_FRAMES: Array<{ name: string; key: string; frame: number; scale: number; handGap?: number }> = [
+    { name: 'bicycle', key: 'objects', frame: 0, scale: 0.7, handGap: 8},
+];
+const OBJECT_SPAWN_CHANCE = 0.5; // probability a queue slot uses a sprite rather than a color rect
+
+type FoodConfig = {
+    width: number; height: number; color: number; rotation: number;
+    spriteKey?: string; spriteFrame?: number;
+    handGap?: number; // per-object override; undefined = use global HAND_GAP
+};
+
+function randomFoodConfig (scene: Phaser.Scene): FoodConfig {
+    if (OBJECT_FRAMES.length > 0 && Math.random() < OBJECT_SPAWN_CHANCE) {
+        const pick = OBJECT_FRAMES[Phaser.Math.Between(0, OBJECT_FRAMES.length - 1)];
+        const frameData = scene.textures.get(pick.key).get(pick.frame);
+        const width  = Math.round(frameData.realWidth  * pick.scale);
+        const height = Math.round(frameData.realHeight * pick.scale);
+        return {
+            width,
+            height,
+            color: 0,
+            rotation: Phaser.Math.FloatBetween(-0.12, 0.12),
+            spriteKey: pick.key,
+            spriteFrame: pick.frame,
+            handGap: pick.handGap,
+        };
+    }
     return {
         width: Phaser.Math.Between(180, 320),
         height: Phaser.Math.Between(80, 120),
@@ -71,8 +101,8 @@ export class Game extends Scene
     private score: number = 0;
 
     private activeFood: FoodItem | null = null;
-    private queue: Array<{ width: number; height: number; color: number; rotation: number }> = [];
-    private queueImages: Phaser.GameObjects.Rectangle[] = [];
+    private queue: FoodConfig[] = [];
+    private queueImages: Phaser.GameObjects.GameObject[] = [];
 
     private hamsterSprite!: Phaser.GameObjects.Sprite;
     private hamsterBiting = false;
@@ -83,6 +113,7 @@ export class Game extends Scene
 
     private biteZone!: Phaser.GameObjects.Graphics;
     private inputBlocked: boolean = true;
+    private activeFoodHandGap: number = HAND_GAP;
 
     constructor ()
     {
@@ -100,6 +131,10 @@ export class Game extends Scene
             frameWidth: 256,
             frameHeight: 256,
             spacing: 1,
+        });
+        this.load.spritesheet('objects', 'assets/objects-sheet.png', {
+            frameWidth: 512,
+            frameHeight: 512,
         });
     }
 
@@ -165,7 +200,7 @@ export class Game extends Scene
 
         // Seed queue
         for (let i = 0; i < QUEUE_SIZE; i++) {
-            this.queue.push(randomFoodConfig());
+            this.queue.push(randomFoodConfig(this));
         }
         this.redrawQueueHUD();
 
@@ -188,8 +223,8 @@ export class Game extends Scene
 
         // Hamster bobs on its own phase; paused during bite
         if (!this.hamsterBiting) {
-            // this.hamsterSprite.setY(HAMSTER_CY - Math.sin(now * TAU_OVER_PERIOD) * FLOAT_AMPLITUDE);
-            this.hamsterSprite.setY(HAMSTER_CY);
+            this.hamsterSprite.setY(HAMSTER_CY - Math.sin(now * TAU_OVER_PERIOD) * FLOAT_AMPLITUDE);
+            // this.hamsterSprite.setY(HAMSTER_CY);
         }
 
         // Food + hands sample the same wave but lagged — guaranteed in sync, never drifts
@@ -208,8 +243,8 @@ export class Game extends Scene
         // so the hands inherit the segment tween's Quad.easeOut exactly.
         if (this.activeFood && this.inputBlocked) {
             const halfSpan = this.activeFood.currentHalfSpan;
-            const lx = FOOD_CX - halfSpan - HAND_GAP;
-            const rx = FOOD_CX + halfSpan + HAND_GAP;
+            const lx = FOOD_CX - halfSpan - this.activeFoodHandGap;
+            const rx = FOOD_CX + halfSpan + this.activeFoodHandGap;
             this.handLeft.setX(lx);
             this.handRight.setX(rx);
             this.handLeftTarget.x  = lx;
@@ -251,15 +286,21 @@ export class Game extends Scene
             const cfg = this.queue[i];
             const slotCX = 20 + slotWidth * i + slotWidth / 2;
 
-            // Scale thumbnail proportionally (max height = CONVEYOR_ITEM_HEIGHT)
             const scale = CONVEYOR_ITEM_HEIGHT / cfg.height;
             const thumbW = cfg.width * scale;
             const thumbH = cfg.height * scale;
 
-            const rect = this.add.rectangle(slotCX, CONVEYOR_Y + 20, thumbW, thumbH, cfg.color)
-                .setRotation(cfg.rotation)
-                .setStrokeStyle(1, 0xffffff, 0.4);
-            this.queueImages.push(rect);
+            let thumb: Phaser.GameObjects.GameObject;
+            if (cfg.spriteKey !== undefined) {
+                thumb = this.add.image(slotCX, CONVEYOR_Y + 20, cfg.spriteKey, cfg.spriteFrame ?? 0)
+                    .setDisplaySize(thumbW, thumbH)
+                    .setRotation(cfg.rotation);
+            } else {
+                thumb = this.add.rectangle(slotCX, CONVEYOR_Y + 20, thumbW, thumbH, cfg.color)
+                    .setRotation(cfg.rotation)
+                    .setStrokeStyle(1, 0xffffff, 0.4);
+            }
+            this.queueImages.push(thumb);
         }
     }
 
@@ -272,11 +313,11 @@ export class Game extends Scene
         }
 
         if (this.queue.length === 0) {
-            this.queue.push(randomFoodConfig());
+            this.queue.push(randomFoodConfig(this));
         }
 
         const cfg = this.queue.shift()!;
-        this.queue.push(randomFoodConfig());
+        this.queue.push(randomFoodConfig(this));
         this.redrawQueueHUD();
 
         // Spawn food off-screen above, tween it down into the active slot.
@@ -287,7 +328,9 @@ export class Game extends Scene
             cfg.width,
             cfg.height,
             cfg.color,
-            cfg.rotation
+            cfg.rotation,
+            cfg.spriteKey,
+            cfg.spriteFrame,
         );
 
         // Tween the food y via a proxy object (FoodItem is not a Phaser GO)
@@ -302,6 +345,7 @@ export class Game extends Scene
             },
             onComplete: () => {
                 this.activeFood = food;
+                this.activeFoodHandGap = cfg.handGap ?? HAND_GAP;
                 this.inputBlocked = false;
                 this.updateHandTargets();
                 if (this.input.activePointer.isDown) {
@@ -479,8 +523,8 @@ export class Game extends Scene
             this.handRight.setAlpha(1);
         } else {
             const halfW = this.activeFood.aabbWidth / 2;
-            this.handLeftTarget  = { x: FOOD_CX - halfW - HAND_GAP, y: FOOD_CY };
-            this.handRightTarget = { x: FOOD_CX + halfW + HAND_GAP, y: FOOD_CY };
+            this.handLeftTarget  = { x: FOOD_CX - halfW - this.activeFoodHandGap, y: FOOD_CY };
+            this.handRightTarget = { x: FOOD_CX + halfW + this.activeFoodHandGap, y: FOOD_CY };
             // Ease-in fade to translucent as hands close in on the food
             this.tweens.add({
                 targets: [this.handLeft, this.handRight],

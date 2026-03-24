@@ -32,7 +32,7 @@ export class FoodItem {
     private _consumed = false; // true when applyBite leaves no surviving segments
 
     private static textureCounter = 0;
-    private static readonly STICKER_BORDER = 12;
+    private static readonly STICKER_BORDER = 5;
 
     constructor (
         scene: Phaser.Scene,
@@ -41,7 +41,9 @@ export class FoodItem {
         width: number,
         height: number,
         color: number,
-        rotation: number = 0
+        rotation: number = 0,
+        spriteKey?: string,
+        spriteFrame?: number,
     ) {
         this.scene = scene;
         this.x = x;
@@ -52,11 +54,24 @@ export class FoodItem {
 
         // Generate the raw (unbordered) content texture
         this.rawKey = `food_raw_${FoodItem.textureCounter}`;
-        const g = scene.add.graphics();
-        g.fillStyle(color, 1);
-        g.fillRect(0, 0, width, height);
-        g.generateTexture(this.rawKey, width, height);
-        g.destroy();
+        if (spriteKey !== undefined) {
+            // Extract the sprite frame into an RT at the target display dimensions.
+            // Using an RT means the same bakeOutlineTexture pipeline works unchanged.
+            const rt = scene.add.renderTexture(0, 0, width, height);
+            const tmp = scene.add.image(0, 0, spriteKey, spriteFrame ?? 0)
+                .setOrigin(0, 0)
+                .setDisplaySize(width, height);
+            rt.draw(tmp, 0, 0);
+            tmp.destroy();
+            rt.saveTexture(this.rawKey);
+            rt.destroy();
+        } else {
+            const g = scene.add.graphics();
+            g.fillStyle(color, 1);
+            g.fillRect(0, 0, width, height);
+            g.generateTexture(this.rawKey, width, height);
+            g.destroy();
+        }
 
         // Bake the white sticker border via the WebGL outline shader.
         // Output is (width + 2*BORDER) × (height + 2*BORDER).
