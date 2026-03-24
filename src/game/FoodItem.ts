@@ -78,6 +78,23 @@ export class FoodItem {
         return this.x;
     }
 
+    /** Rendered width including the sticker border on left and right. */
+    get displayWidth (): number {
+        return this.width + FoodItem.STICKER_BORDER * 2;
+    }
+
+    /** Rendered height including the sticker border on top and bottom. */
+    get displayHeight (): number {
+        return this.height + FoodItem.STICKER_BORDER * 2;
+    }
+
+    /** Axis-aligned bounding box height of the rotated display object (border included). */
+    get aabbHeight (): number {
+        const cos = Math.abs(Math.cos(this.rotation));
+        const sin = Math.abs(Math.sin(this.rotation));
+        return this.displayWidth * sin + this.displayHeight * cos;
+    }
+
     get centerY (): number {
         return this.y;
     }

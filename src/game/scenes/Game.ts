@@ -13,6 +13,8 @@ const NEXT_ITEM_DELAY = 500;    // ms before next item animates in after full co
 const QUEUE_SIZE = 4;           // upcoming items shown in conveyor HUD
 
 const DRAG_ZONE_Y = 700;        // y above which drag is ignored
+const BITE_ZONE_PADDING = 4;        // extra px added above/below the food when drawing the bite zone overlay
+const BITE_ZONE_DEFAULT_HEIGHT = 100; // fallback height used before activeFood is ready
 
 // Food slot center
 const FOOD_CX = CANVAS_W / 2;
@@ -45,7 +47,6 @@ export class Game extends Scene
     private queueImages: Phaser.GameObjects.Rectangle[] = [];
 
     private biteZone!: Phaser.GameObjects.Graphics;
-    private dragStartX: number = 0;
     private inputBlocked: boolean = true;
 
     constructor ()
@@ -101,10 +102,10 @@ export class Game extends Scene
 
     update (_time: number, delta: number)
     {
-        this.hungerMeter.deplete(delta);
-        if (this.hungerMeter.getValue() <= 0) {
-            this.scene.start('GameOver', { score: this.score });
-        }
+        // this.hungerMeter.deplete(delta);
+        // if (this.hungerMeter.getValue() <= 0) {
+        //     this.scene.start('GameOver', { score: this.score });
+        // }
     }
 
     // ─── Hamster graphic ───────────────────────────────────────────────────
@@ -202,7 +203,7 @@ export class Game extends Scene
         this.queue.push(randomFoodConfig());
         this.redrawQueueHUD();
 
-        // Spawn food off-screen above, tween it down into the active slot
+        // Spawn food off-screen above, tween it down into the active slot.
         const food = new FoodItem(
             this,
             FOOD_CX,
@@ -213,18 +214,7 @@ export class Game extends Scene
             cfg.rotation
         );
 
-        this.tweens.add({
-            targets: food.setPosition(FOOD_CX, FOOD_CY - 300) as unknown as Phaser.GameObjects.Image,
-            // We can't tween FoodItem directly; tween a proxy object
-            onComplete: () => {
-                this.activeFood = food;
-                this.inputBlocked = false;
-            },
-            duration: 0,
-        });
-
-        // Manually tween the food y via a simple timer approach
-        // Since FoodItem isn't a Phaser GO, we tween a data object
+        // Tween the food y via a proxy object (FoodItem is not a Phaser GO)
         const proxy = { y: FOOD_CY - 300 };
         this.tweens.add({
             targets: proxy,
@@ -237,6 +227,9 @@ export class Game extends Scene
             onComplete: () => {
                 this.activeFood = food;
                 this.inputBlocked = false;
+                if (this.input.activePointer.isDown) {
+                    this.drawBiteZone(Phaser.Math.Clamp(this.input.activePointer.x, 0, CANVAS_W));
+                }
             },
         });
     }
@@ -244,39 +237,26 @@ export class Game extends Scene
     // ─── Drag / bite interaction ────────────────────────────────────────────
 
     private onPointerDown (pointer: Phaser.Input.Pointer): void {
-        if (this.inputBlocked) return;
         if (pointer.y < DRAG_ZONE_Y) return;
-        this.dragStartX = pointer.x;
-        this.drawBiteZone(0);
+        this.drawBiteZone(Phaser.Math.Clamp(pointer.x, 0, CANVAS_W));
     }
 
     private onPointerMove (pointer: Phaser.Input.Pointer): void {
-        if (this.inputBlocked) return;
         if (!pointer.isDown) return;
         if (pointer.y < DRAG_ZONE_Y && pointer.downY < DRAG_ZONE_Y) return;
 
-        const dragDist = Math.abs(pointer.x - this.dragStartX);
-        const food = this.activeFood;
-        if (!food) return;
-
-        const biteWidth = Math.min(dragDist, CANVAS_W);
+        const biteWidth = Phaser.Math.Clamp(pointer.x, 0, CANVAS_W);
         this.drawBiteZone(biteWidth);
     }
 
     private onPointerUp (pointer: Phaser.Input.Pointer): void {
-        if (this.inputBlocked) return;
         if (pointer.downY < DRAG_ZONE_Y) return;
 
-        const food = this.activeFood;
-        if (!food) {
-            this.biteZone.clear();
-            return;
-        }
-
-        const dragDist = Math.abs(pointer.x - this.dragStartX);
-        const biteWidth = Math.min(dragDist, CANVAS_W);
+        const biteWidth = Phaser.Math.Clamp(pointer.x, 0, CANVAS_W);
         this.biteZone.clear();
 
+        // Only bite if food is settled in the active slot
+        if (this.inputBlocked || !this.activeFood) return;
         if (biteWidth < 2) return; // ignore accidental taps
 
         this.executeBite(biteWidth);
@@ -284,12 +264,12 @@ export class Game extends Scene
 
     private drawBiteZone (biteWidth: number): void {
         this.biteZone.clear();
-        if (!this.activeFood || biteWidth <= 0) return;
+        if (biteWidth <= 0) return;
 
-        const food = this.activeFood;
-        const left = food.centerX - biteWidth / 2;
-        const top = food.centerY - food.height / 2 - 4;
-        const height = food.height + 8;
+        const zoneHeight = this.activeFood ? this.activeFood.aabbHeight : BITE_ZONE_DEFAULT_HEIGHT;
+        const left = FOOD_CX - biteWidth / 2;
+        const top = FOOD_CY - zoneHeight / 2 - BITE_ZONE_PADDING;
+        const height = zoneHeight + BITE_ZONE_PADDING * 2;
 
         this.biteZone.fillStyle(0xffffff, 0.25);
         this.biteZone.fillRect(left, top, biteWidth, height);
