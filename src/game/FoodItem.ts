@@ -88,6 +88,13 @@ export class FoodItem {
         return this.height + FoodItem.STICKER_BORDER * 2;
     }
 
+    /** Axis-aligned bounding box width of the rotated display object (border included). */
+    get aabbWidth (): number {
+        const cos = Math.abs(Math.cos(this.rotation));
+        const sin = Math.abs(Math.sin(this.rotation));
+        return this.displayWidth * cos + this.displayHeight * sin;
+    }
+
     /** Axis-aligned bounding box height of the rotated display object (border included). */
     get aabbHeight (): number {
         const cos = Math.abs(Math.cos(this.rotation));

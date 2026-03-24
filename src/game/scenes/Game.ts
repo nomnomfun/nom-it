@@ -20,6 +20,24 @@ const BITE_ZONE_DEFAULT_HEIGHT = 100; // fallback height used before activeFood 
 const FOOD_CX = CANVAS_W / 2;
 const FOOD_CY = 440;
 
+// Hamster sprite
+const HAMSTER_CX = CANVAS_W / 2;
+const HAMSTER_CY = 200;
+const HAMSTER_SCALE = 0.75;
+
+// Hamster hands
+const HAND_SPEED = 500;          // px/s — how fast hands slide to/from food
+const HAND_SCALE = 0.7;          // 256×256 → ~179×179 rendered
+const HAND_ALPHA = 0.6;          // opacity — low enough to see food behind the hands
+const HAND_GAP = 25;             // extra px between hand center and food AABB edge
+const HAND_DEFAULT_SPREAD = 180; // half-distance between hands when no food is active
+
+// Bite animation frame durations (ms) — tune these to taste
+const BITE_ANIM_IDLE_MS        = 1;
+const BITE_ANIM_MOUTH_OPEN_MS  = 50; // held longer for anticipation
+const BITE_ANIM_BITE_MS        = 230; // held longer for impact
+const BITE_ANIM_INBETWEEN_MS   = 80;
+
 // Conveyor HUD row
 const CONVEYOR_Y = 610;
 const CONVEYOR_ITEM_HEIGHT = 60;
@@ -46,6 +64,12 @@ export class Game extends Scene
     private queue: Array<{ width: number; height: number; color: number; rotation: number }> = [];
     private queueImages: Phaser.GameObjects.Rectangle[] = [];
 
+    private hamsterSprite!: Phaser.GameObjects.Sprite;
+    private handLeft!: Phaser.GameObjects.Sprite;
+    private handRight!: Phaser.GameObjects.Sprite;
+    private handLeftTarget = { x: 0, y: 0 };
+    private handRightTarget = { x: 0, y: 0 };
+
     private biteZone!: Phaser.GameObjects.Graphics;
     private inputBlocked: boolean = true;
 
@@ -54,14 +78,49 @@ export class Game extends Scene
         super('Game');
     }
 
+    preload ()
+    {
+        this.load.spritesheet('nomnom', 'assets/nomnom-sheet.png', {
+            frameWidth: 512,
+            frameHeight: 512,
+            spacing: 1,
+        });
+        this.load.spritesheet('nomnom-hands', 'assets/nomnom-hand-sheet.png', {
+            frameWidth: 256,
+            frameHeight: 256,
+            spacing: 1,
+        });
+    }
+
     create ()
     {
-        this.cameras.main.setBackgroundColor('#1a1a2e');
+        this.cameras.main.setBackgroundColor('#839892');
         this.score = 0;
         this.inputBlocked = true;
 
-        this.drawHamster();
         this.drawConveyorBackground();
+
+        // Hamster sprite — starts on frame 0 (idle)
+        this.hamsterSprite = this.add.sprite(HAMSTER_CX, HAMSTER_CY, 'nomnom', 0)
+            .setScale(HAMSTER_SCALE);
+
+        this.anims.create({
+            key: 'bite',
+            frames: [
+                { key: 'nomnom', frame: 0, duration: BITE_ANIM_IDLE_MS },
+                { key: 'nomnom', frame: 1, duration: BITE_ANIM_MOUTH_OPEN_MS },
+                { key: 'nomnom', frame: 2, duration: BITE_ANIM_BITE_MS },
+                { key: 'nomnom', frame: 3, duration: BITE_ANIM_INBETWEEN_MS },
+            ],
+            frameRate: 10,
+            repeat: 0,
+        });
+
+        // Return to idle frame after bite animation completes
+        this.hamsterSprite.on(
+            Phaser.Animations.Events.ANIMATION_COMPLETE,
+            () => this.hamsterSprite.setFrame(0)
+        );
 
         // HUD
         this.hungerMeter = new HungerMeter(this, 20, 14, CANVAS_W - 40, 32);
@@ -80,8 +139,18 @@ export class Game extends Scene
             align: 'center',
         }).setOrigin(0.5, 0);
 
-        // Bite zone overlay
-        this.biteZone = this.add.graphics();
+        // Hand sprites — start spread wide (no food active); depth above food
+        this.handLeftTarget  = { x: FOOD_CX - HAND_DEFAULT_SPREAD, y: FOOD_CY };
+        this.handRightTarget = { x: FOOD_CX + HAND_DEFAULT_SPREAD, y: FOOD_CY };
+        this.handLeft = this.add.sprite(this.handLeftTarget.x, this.handLeftTarget.y, 'nomnom-hands', 0)
+            .setScale(HAND_SCALE)
+            .setDepth(5);
+        this.handRight = this.add.sprite(this.handRightTarget.x, this.handRightTarget.y, 'nomnom-hands', 1)
+            .setScale(HAND_SCALE)
+            .setDepth(5);
+
+        // Bite zone overlay — drawn above hands
+        this.biteZone = this.add.graphics().setDepth(10);
 
         // Seed queue
         for (let i = 0; i < QUEUE_SIZE; i++) {
@@ -102,51 +171,14 @@ export class Game extends Scene
 
     update (_time: number, delta: number)
     {
+        const dt = delta / 1000;
+        this.moveHandToward(this.handLeft,  this.handLeftTarget,  dt);
+        this.moveHandToward(this.handRight, this.handRightTarget, dt);
+
         // this.hungerMeter.deplete(delta);
         // if (this.hungerMeter.getValue() <= 0) {
         //     this.scene.start('GameOver', { score: this.score });
         // }
-    }
-
-    // ─── Hamster graphic ───────────────────────────────────────────────────
-
-    private drawHamster (): void {
-        const g = this.add.graphics();
-        const cx = CANVAS_W / 2;
-        const cy = 195;
-
-        // Body
-        g.fillStyle(0xc8854a, 1);
-        g.fillEllipse(cx, cy + 40, 160, 120);
-
-        // Head
-        g.fillStyle(0xc8854a, 1);
-        g.fillCircle(cx, cy - 10, 80);
-
-        // Ears
-        g.fillStyle(0xc8854a, 1);
-        g.fillCircle(cx - 66, cy - 70, 28);
-        g.fillCircle(cx + 66, cy - 70, 28);
-        g.fillStyle(0xe8a070, 1);
-        g.fillCircle(cx - 66, cy - 70, 16);
-        g.fillCircle(cx + 66, cy - 70, 16);
-
-        // Eyes
-        g.fillStyle(0x222222, 1);
-        g.fillCircle(cx - 28, cy - 18, 11);
-        g.fillCircle(cx + 28, cy - 18, 11);
-        g.fillStyle(0xffffff, 1);
-        g.fillCircle(cx - 24, cy - 22, 4);
-        g.fillCircle(cx + 32, cy - 22, 4);
-
-        // Nose
-        g.fillStyle(0xff9999, 1);
-        g.fillEllipse(cx, cy + 4, 18, 12);
-
-        // Cheeks
-        g.fillStyle(0xd4956a, 1);
-        g.fillCircle(cx - 60, cy + 8, 26);
-        g.fillCircle(cx + 60, cy + 8, 26);
     }
 
     // ─── Conveyor HUD ──────────────────────────────────────────────────────
@@ -227,6 +259,7 @@ export class Game extends Scene
             onComplete: () => {
                 this.activeFood = food;
                 this.inputBlocked = false;
+                this.updateHandTargets();
                 if (this.input.activePointer.isDown) {
                     this.drawBiteZone(Phaser.Math.Clamp(this.input.activePointer.x, 0, CANVAS_W));
                 }
@@ -282,6 +315,7 @@ export class Game extends Scene
         if (!food) return;
 
         this.inputBlocked = true;
+        this.hamsterSprite.play('bite');
 
         const biteX = food.centerX - biteWidth / 2;
         const { consumed, total } = food.applyBite(biteX, biteWidth);
@@ -304,7 +338,7 @@ export class Game extends Scene
         });
 
         // "CRUNCH!" pop
-        const crunch = this.add.text(food.centerX, food.centerY - 60, 'CRUNCH!', {
+        const crunch = this.add.text(food.centerX, food.centerY - 60, 'NOM!', {
             fontFamily: 'Arial Black',
             fontSize: 28,
             color: '#ffffff',
@@ -328,6 +362,7 @@ export class Game extends Scene
 
             this.activeFood = null;
             food.destroy();
+            this.updateHandTargets();
 
             this.time.delayedCall(NEXT_ITEM_DELAY, () => {
                 this.advanceQueue();
@@ -335,6 +370,49 @@ export class Game extends Scene
         } else {
             food.tweenMerge(this.tweens, () => {
                 this.inputBlocked = false;
+                this.updateHandTargets();
+            });
+        }
+    }
+
+    // ─── Hand helpers ───────────────────────────────────────────────────────
+
+    /** Move a hand sprite toward its target at HAND_SPEED px/s. */
+    private moveHandToward (
+        hand: Phaser.GameObjects.Sprite,
+        target: { x: number; y: number },
+        dt: number
+    ): void {
+        const dx = target.x - hand.x;
+        const dy = target.y - hand.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 1) { hand.setPosition(target.x, target.y); return; }
+        const step = HAND_SPEED * dt;
+        if (step >= dist) {
+            hand.setPosition(target.x, target.y);
+        } else {
+            hand.setPosition(hand.x + (dx / dist) * step, hand.y + (dy / dist) * step);
+        }
+    }
+
+    /** Recompute where the hands should be based on the current active food. */
+    private updateHandTargets (): void {
+        if (!this.activeFood) {
+            this.handLeftTarget  = { x: FOOD_CX - HAND_DEFAULT_SPREAD, y: FOOD_CY };
+            this.handRightTarget = { x: FOOD_CX + HAND_DEFAULT_SPREAD, y: FOOD_CY };
+            // Restore full opacity when no food is active
+            this.handLeft.setAlpha(1);
+            this.handRight.setAlpha(1);
+        } else {
+            const halfW = this.activeFood.aabbWidth / 2;
+            this.handLeftTarget  = { x: FOOD_CX - halfW - HAND_GAP, y: FOOD_CY };
+            this.handRightTarget = { x: FOOD_CX + halfW + HAND_GAP, y: FOOD_CY };
+            // Ease-in fade to translucent as hands close in on the food
+            this.tweens.add({
+                targets: [this.handLeft, this.handRight],
+                alpha: HAND_ALPHA,
+                duration: 100,
+                ease: 'Sine.easeIn',
             });
         }
     }
