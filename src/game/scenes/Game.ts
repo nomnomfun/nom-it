@@ -32,6 +32,11 @@ const HAND_ALPHA = 0.6;          // opacity — low enough to see food behind th
 const HAND_GAP = 25;             // extra px between hand center and food AABB edge
 const HAND_DEFAULT_SPREAD = 180; // half-distance between hands when no food is active
 
+// Floating idle animation — all layers share one sine wave; food/hands lag behind
+const FLOAT_AMPLITUDE = 3;    // px — shared vertical bob distance
+const FLOAT_PERIOD    = 4000;  // ms — full cycle (up + back down)
+const FLOAT_LAG_MS    = 600;   // ms — how far food + hands trail behind the hamster
+
 // Bite animation frame durations (ms) — tune these to taste
 const BITE_ANIM_IDLE_MS        = 1;
 const BITE_ANIM_MOUTH_OPEN_MS  = 50; // held longer for anticipation
@@ -65,6 +70,7 @@ export class Game extends Scene
     private queueImages: Phaser.GameObjects.Rectangle[] = [];
 
     private hamsterSprite!: Phaser.GameObjects.Sprite;
+    private hamsterBiting = false;
     private handLeft!: Phaser.GameObjects.Sprite;
     private handRight!: Phaser.GameObjects.Sprite;
     private handLeftTarget = { x: 0, y: 0 };
@@ -116,10 +122,13 @@ export class Game extends Scene
             repeat: 0,
         });
 
-        // Return to idle frame after bite animation completes
+        // Return to idle frame after bite animation completes; float resumes automatically
         this.hamsterSprite.on(
             Phaser.Animations.Events.ANIMATION_COMPLETE,
-            () => this.hamsterSprite.setFrame(0)
+            () => {
+                this.hamsterSprite.setFrame(0);
+                this.hamsterBiting = false;
+            }
         );
 
         // HUD
@@ -172,6 +181,22 @@ export class Game extends Scene
     update (_time: number, delta: number)
     {
         const dt = delta / 1000;
+        const TAU_OVER_PERIOD = (2 * Math.PI) / FLOAT_PERIOD;
+        const now = this.time.now;
+
+        // Hamster bobs on its own phase; paused during bite
+        if (!this.hamsterBiting) {
+            this.hamsterSprite.setY(HAMSTER_CY - Math.sin(now * TAU_OVER_PERIOD) * FLOAT_AMPLITUDE);
+        }
+
+        // Food + hands sample the same wave but lagged — guaranteed in sync, never drifts
+        const foodFloatY = -Math.sin((now - FLOAT_LAG_MS) * TAU_OVER_PERIOD) * FLOAT_AMPLITUDE;
+        this.handLeftTarget.y  = FOOD_CY + foodFloatY;
+        this.handRightTarget.y = FOOD_CY + foodFloatY;
+        if (this.activeFood) {
+            this.activeFood.setPosition(FOOD_CX, FOOD_CY + foodFloatY);
+        }
+
         this.moveHandToward(this.handLeft,  this.handLeftTarget,  dt);
         this.moveHandToward(this.handRight, this.handRightTarget, dt);
 
@@ -315,6 +340,8 @@ export class Game extends Scene
         if (!food) return;
 
         this.inputBlocked = true;
+        this.hamsterBiting = true;
+        this.hamsterSprite.setY(HAMSTER_CY);
         this.hamsterSprite.play('bite');
 
         const biteX = food.centerX - biteWidth / 2;
